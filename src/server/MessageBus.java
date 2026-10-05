@@ -12,7 +12,9 @@ public class MessageBus {
     private final Map<String, Map<String, Integer>> lecturaClientes = new HashMap<>();
 
     public void registrarCliente(String clientID) {
-        lecturaClientes.putIfAbsent(clientID, new HashMap<>());
+        synchronized (canales) {
+            lecturaClientes.putIfAbsent(clientID, new HashMap<>());
+        }
     }
 
     public CommandResult crearCanal(String[] partes, String clientID) {
@@ -36,6 +38,8 @@ public class MessageBus {
         synchronized (canales) {
             if (canales.containsKey(canal)) {
                 canales.remove(canal);
+                // Despierta a los clientes que esperaban en este canal para que reciban el error
+                canales.notifyAll();
                 return new CommandResult("RMCHAN_OK");
             } else {
                 return new CommandResult("ERROR Canal no existe");
@@ -52,27 +56,41 @@ public class MessageBus {
             List<String> lista = canales.get(canal);
             if (lista == null) return new CommandResult("ERROR Canal no existe");
             lista.add(mensaje);
+            // Avisa a los clientes que estaban esperando un mensaje nuevo
+            canales.notifyAll();
             return new CommandResult("WRITE_OK");
         }
     }
 
     public CommandResult leerMensaje(String[] partes, String clientID) {
         if (partes.length < 3) return new CommandResult("ERROR Faltan parámetros READ");
+        if (clientID == null) return new CommandResult("ERROR Cliente no registrado (usa OPEN)");
         String canal = partes[1];
         boolean dontwait = partes[2].equalsIgnoreCase("true");
 
         synchronized (canales) {
-            List<String> mensajes = canales.get(canal);
-            if (mensajes == null) return new CommandResult("ERROR Canal no existe");
+            while (true) {
+                List<String> mensajes = canales.get(canal);
+                if (mensajes == null) return new CommandResult("ERROR Canal no existe");
 
-            Map<String, Integer> leidos = lecturaClientes.get(clientID);
-            int indice = leidos.getOrDefault(canal, 0);
+                Map<String, Integer> leidos = lecturaClientes.get(clientID);
+                int indice = leidos.getOrDefault(canal, 0);
 
-            if (indice < mensajes.size()) {
-                leidos.put(canal, indice + 1);
-                return new CommandResult("MSG " + mensajes.get(indice));
-            } else {
-                return dontwait ? new CommandResult("NULL") : new CommandResult("WAIT");
+                if (indice < mensajes.size()) {
+                    leidos.put(canal, indice + 1);
+                    return new CommandResult("MSG " + mensajes.get(indice));
+                }
+
+                if (dontwait) return new CommandResult("NULL");
+
+                // Lectura bloqueante: espera hasta que alguien escriba o borre el canal.
+                // wait() libera el cerrojo mientras espera, así los demás clientes pueden seguir trabajando.
+                try {
+                    canales.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return new CommandResult("ERROR Lectura interrumpida");
+                }
             }
         }
     }
