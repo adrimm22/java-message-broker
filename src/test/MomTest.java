@@ -89,4 +89,22 @@ public class MomTest {
         String result = cliente1.readChannel("canalTest", true);
         assertTrue(result.contains("ERROR Canal no existe"));
     }
+
+    @Test
+    @Order(8)
+    public void testLecturaBloqueante() throws Exception {
+        cliente1.mkChannel("canalBloqueante");
+
+        // cliente2 empieza a leer sin dontwait, así que debe quedarse esperando
+        java.util.concurrent.CompletableFuture<String> lectura =
+                java.util.concurrent.CompletableFuture.supplyAsync(
+                        () -> cliente2.readChannel("canalBloqueante", false));
+
+        Thread.sleep(500);
+        assertFalse(lectura.isDone());
+
+        // En cuanto cliente1 escribe, cliente2 recibe el mensaje
+        cliente1.writeChannel("canalBloqueante", "llega tarde");
+        assertEquals("llega tarde", lectura.get(5, java.util.concurrent.TimeUnit.SECONDS));
+    }
 }
